@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #define INT_BUF 32
+#define LINE_BUF 65536
 
 static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_active_threads = 0;
@@ -16,17 +17,17 @@ typedef struct {
     int threshold;
 } task_t;
 
-static int my_strlen(const char *s) {
+static int slen(const char *s) {
     int n = 0;
     while (s[n]) n++;
     return n;
 }
 
-static void print_str(int fd, const char *s) {
-    write(fd, s, my_strlen(s));
+static void pstr(int fd, const char *s) {
+    write(fd, s, slen(s));
 }
 
-static void print_int(int fd, long v) {
+static void pint(int fd, long v) {
     char buf[INT_BUF];
     int i = INT_BUF - 1;
     int neg = 0;
@@ -44,7 +45,7 @@ static void print_int(int fd, long v) {
     write(fd, buf + i + 1, INT_BUF - 1 - i);
 }
 
-static int my_atoi(const char *s, int *out) {
+static int atoi_(const char *s, int *out) {
     int sign = 1;
     int val = 0;
     int i = 0;
@@ -59,7 +60,7 @@ static int my_atoi(const char *s, int *out) {
     return 1;
 }
 
-static int str_eq(const char *a, const char *b) {
+static int streq(const char *a, const char *b) {
     int i = 0;
     while (a[i] && b[i]) {
         if (a[i] != b[i]) return 0;
@@ -68,60 +69,60 @@ static int str_eq(const char *a, const char *b) {
     return a[i] == b[i];
 }
 
-static void swap_int(int *a, int *b) {
+static void swp(int *a, int *b) {
     int t = *a;
     *a = *b;
     *b = t;
 }
 
-static int partition(int *arr, int left, int right) {
+static int part(int *arr, int left, int right) {
     int mid = left + (right - left) / 2;
-    if (arr[mid] < arr[left])   swap_int(&arr[mid], &arr[left]);
-    if (arr[right] < arr[left]) swap_int(&arr[right], &arr[left]);
-    if (arr[right] < arr[mid])  swap_int(&arr[right], &arr[mid]);
+    if (arr[mid] < arr[left])   swp(&arr[mid], &arr[left]);
+    if (arr[right] < arr[left]) swp(&arr[right], &arr[left]);
+    if (arr[right] < arr[mid])  swp(&arr[right], &arr[mid]);
     int pivot = arr[mid];
-    swap_int(&arr[mid], &arr[right]);
+    swp(&arr[mid], &arr[right]);
 
     int i = left - 1;
     for (int j = left; j < right; j++) {
         if (arr[j] <= pivot) {
             i++;
-            swap_int(&arr[i], &arr[j]);
+            swp(&arr[i], &arr[j]);
         }
     }
-    swap_int(&arr[i + 1], &arr[right]);
+    swp(&arr[i + 1], &arr[right]);
     return i + 1;
 }
 
-static void seq_quicksort(int *arr, int left, int right) {
+static void qsort_seq(int *arr, int left, int right) {
     while (left < right) {
-        int pivot = partition(arr, left, right);
+        int pivot = part(arr, left, right);
         if (pivot - left < right - pivot) {
-            seq_quicksort(arr, left, pivot - 1);
+            qsort_seq(arr, left, pivot - 1);
             left = pivot + 1;
         } else {
-            seq_quicksort(arr, pivot + 1, right);
+            qsort_seq(arr, pivot + 1, right);
             right = pivot - 1;
         }
     }
 }
 
-static void paral_quicksort(int *arr, int left, int right, int threshold);
+static void qsort_par(int *arr, int left, int right, int threshold);
 
 static void *worker(void *arg) {
     task_t *t = (task_t *)arg;
-    paral_quicksort(t->arr, t->left, t->right, t->threshold);
+    qsort_par(t->arr, t->left, t->right, t->threshold);
     free(t);
     return NULL;
 }
 
-static void paral_quicksort(int *arr, int left, int right, int threshold) {
+static void qsort_par(int *arr, int left, int right, int threshold) {
     if (right - left < threshold) {
-        seq_quicksort(arr, left, right);
+        qsort_seq(arr, left, right);
         return;
     }
 
-    int pivot = partition(arr, left, right);
+    int pivot = part(arr, left, right);
 
     int can_spawn = 0;
     pthread_mutex_lock(&g_mutex);
@@ -137,8 +138,8 @@ static void paral_quicksort(int *arr, int left, int right, int threshold) {
             pthread_mutex_lock(&g_mutex);
             g_active_threads--;
             pthread_mutex_unlock(&g_mutex);
-            paral_quicksort(arr, left, pivot - 1, threshold);
-            paral_quicksort(arr, pivot + 1, right, threshold);
+            qsort_par(arr, left, pivot - 1, threshold);
+            qsort_par(arr, pivot + 1, right, threshold);
             return;
         }
         t->arr = arr;
@@ -148,7 +149,7 @@ static void paral_quicksort(int *arr, int left, int right, int threshold) {
 
         pthread_t tid;
         if (pthread_create(&tid, NULL, worker, t) == 0) {
-            paral_quicksort(arr, pivot + 1, right, threshold);
+            qsort_par(arr, pivot + 1, right, threshold);
             pthread_join(tid, NULL);
             pthread_mutex_lock(&g_mutex);
             g_active_threads--;
@@ -161,14 +162,14 @@ static void paral_quicksort(int *arr, int left, int right, int threshold) {
         free(t);
     }
 
-    paral_quicksort(arr, left, pivot - 1, threshold);
-    paral_quicksort(arr, pivot + 1, right, threshold);
+    qsort_par(arr, left, pivot - 1, threshold);
+    qsort_par(arr, pivot + 1, right, threshold);
 }
 
-static int *generate_array(int n, unsigned int seed) {
+static int *gen_arr(int n, unsigned int seed) {
     int *arr = malloc((size_t)n * sizeof(int));
     if (!arr) {
-        print_str(2, "Error: malloc failed\n");
+        pstr(2, "Error: malloc failed\n");
         _exit(1);
     }
     srand(seed);
@@ -178,16 +179,34 @@ static int *generate_array(int n, unsigned int seed) {
     return arr;
 }
 
-static int is_sorted(const int *arr, int n) {
+static int sorted(const int *arr, int n) {
     for (int i = 1; i < n; i++)
         if (arr[i - 1] > arr[i]) return 0;
     return 1;
 }
 
-static double now_ms(void) {
+static double nowms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
+static void parr(int fd, const int *arr, int n) {
+    for (int i = 0; i < n; i++) {
+        pint(fd, arr[i]);
+    }
+}
+
+static int rline(int fd, char *buf, int size) {
+    int total = 0;
+    while (total < size - 1) {
+        ssize_t n = read(fd, buf + total, size - 1 - total);
+        if (n <= 0) break;
+        total += (int)n;
+        if (buf[total - 1] == '\n') break;
+    }
+    buf[total] = '\0';
+    return total;
 }
 
 int main(int argc, char **argv) {
@@ -196,78 +215,171 @@ int main(int argc, char **argv) {
     int threshold = 10000;
     int seed_in = 42;
     int skip_seq = 0;
+    int mode_random = 1;
+    int mode_input = 0;
     int tmp = 0;
 
     for (int i = 1; i < argc; i++) {
-        if (str_eq(argv[i], "-n") && i + 1 < argc && my_atoi(argv[++i], &tmp)) n = tmp;
-        else if (str_eq(argv[i], "-t") && i + 1 < argc && my_atoi(argv[++i], &tmp)) max_threads = tmp;
-        else if (str_eq(argv[i], "-m") && i + 1 < argc && my_atoi(argv[++i], &tmp)) threshold = tmp;
-        else if (str_eq(argv[i], "-s") && i + 1 < argc && my_atoi(argv[++i], &tmp)) seed_in = tmp;
-        else if (str_eq(argv[i], "-q")) skip_seq = 1;
+        if (streq(argv[i], "-n") && i + 1 < argc && atoi_(argv[++i], &tmp)) n = tmp;
+        else if (streq(argv[i], "-t") && i + 1 < argc && atoi_(argv[++i], &tmp)) max_threads = tmp;
+        else if (streq(argv[i], "-m") && i + 1 < argc && atoi_(argv[++i], &tmp)) threshold = tmp;
+        else if (streq(argv[i], "-s") && i + 1 < argc && atoi_(argv[++i], &tmp)) { seed_in = tmp; mode_random = 1; mode_input = 0; }
+        else if (streq(argv[i], "-q")) skip_seq = 1;
+        else if (streq(argv[i], "-d")) { mode_input = 1; mode_random = 0; }
         else {
-            print_str(2, "Usage: play3 [-n size] [-t threads] [-m threshold] [-s seed] [-q]\n");
+            pstr(2, "Usage: ");
+            pstr(2, argv[0]);
+            pstr(2, " [-n size] [-t threads] [-m threshold] [-s seed | -d] [-q]\n");
             return 1;
         }
     }
     if (n <= 0 || max_threads <= 0 || threshold < 1) {
-        print_str(2, "Error: invalid parameters\n");
+        pstr(2, "Error: invalid parameters\n");
         return 1;
     }
     g_max_threads = max_threads;
 
-    unsigned int seed = (unsigned int)seed_in;
-
-    double ts = 0.0;
     int *arr_seq = NULL;
+    int *arr_par = NULL;
+    double ts = 0.0;
+    double tp = 0.0;
 
-    if (!skip_seq) {
-        arr_seq = generate_array(n, seed);
-        double t0 = now_ms();
-        seq_quicksort(arr_seq, 0, n - 1);
-        double t1 = now_ms();
+    if (mode_input) {
+        char line[LINE_BUF];
+        pstr(1, "Enter array (numbers separated by spaces):\n");
+        int len = rline(0, line, LINE_BUF);
+        if (len <= 0) {
+            pstr(2, "Error: empty input\n");
+            return 1;
+        }
+        int count = 0;
+        int capacity = 1024;
+        int *tmp_arr = malloc((size_t)capacity * sizeof(int));
+        if (!tmp_arr) {
+            pstr(2, "Error: malloc failed\n");
+            return 1;
+        }
+        int i = 0;
+        while (line[i]) {
+            while (line[i] == ' ' || line[i] == '\t' || line[i] == '\n' || line[i] == '\r') i++;
+            if (!line[i]) break;
+            int val = 0;
+            int sign = 1;
+            if (line[i] == '-') { sign = -1; i++; }
+            int start = i;
+            while (line[i] >= '0' && line[i] <= '9') {
+                val = val * 10 + (line[i] - '0');
+                i++;
+            }
+            if (i == start) {
+                pstr(2, "Error: invalid number in input\n");
+                free(tmp_arr);
+                return 1;
+            }
+            if (count >= capacity) {
+                capacity *= 2;
+                int *new_arr = malloc((size_t)capacity * sizeof(int));
+                if (!new_arr) {
+                    pstr(2, "Error: malloc failed\n");
+                    free(tmp_arr);
+                    return 1;
+                }
+                for (int k = 0; k < count; k++) new_arr[k] = tmp_arr[k];
+                free(tmp_arr);
+                tmp_arr = new_arr;
+            }
+            tmp_arr[count++] = sign * val;
+        }
+        if (count == 0) {
+            pstr(2, "Error: no numbers in input\n");
+            free(tmp_arr);
+            return 1;
+        }
+        n = count;
+
+        arr_seq = malloc((size_t)n * sizeof(int));
+        arr_par = malloc((size_t)n * sizeof(int));
+        if (!arr_seq || !arr_par) {
+            pstr(2, "Error: malloc failed\n");
+            free(tmp_arr);
+            if (arr_seq) free(arr_seq);
+            if (arr_par) free(arr_par);
+            return 1;
+        }
+        for (int k = 0; k < n; k++) {
+            arr_seq[k] = tmp_arr[k];
+            arr_par[k] = tmp_arr[k];
+        }
+        free(tmp_arr);
+
+        pstr(1, "Input array:\n");
+        parr(1, arr_seq, n);
+
+        double t0 = nowms();
+        qsort_seq(arr_seq, 0, n - 1);
+        double t1 = nowms();
         ts = t1 - t0;
 
-        if (!is_sorted(arr_seq, n)) {
-            print_str(2, "Error: sequential sort failed\n");
+        if (!sorted(arr_seq, n)) {
+            pstr(2, "Error: sequential sort failed\n");
             return 2;
         }
-    }
+    } else {
+        unsigned int seed = (unsigned int)seed_in;
 
-    int *arr_par = generate_array(n, seed);
+        if (!skip_seq) {
+            arr_seq = gen_arr(n, seed);
+            double t0 = nowms();
+            qsort_seq(arr_seq, 0, n - 1);
+            double t1 = nowms();
+            ts = t1 - t0;
+
+            if (!sorted(arr_seq, n)) {
+                pstr(2, "Error: sequential sort failed\n");
+                return 2;
+            }
+        }
+        arr_par = gen_arr(n, seed);
+    }
 
     pthread_mutex_lock(&g_mutex);
     g_active_threads = 0;
     pthread_mutex_unlock(&g_mutex);
 
-    double t2 = now_ms();
-    paral_quicksort(arr_par, 0, n - 1, threshold);
-    double t3 = now_ms();
-    double tp = t3 - t2;
+    double t2 = nowms();
+    qsort_par(arr_par, 0, n - 1, threshold);
+    double t3 = nowms();
+    tp = t3 - t2;
 
-    if (!is_sorted(arr_par, n)) {
-        print_str(2, "Error: parallel sort failed\n");
+    if (!sorted(arr_par, n)) {
+        pstr(2, "Error: parallel sort failed\n");
         return 3;
+    }
+
+    if (mode_input) {
+        pstr(1, "Sorted array:\n");
+        parr(1, arr_par, n);
     }
 
     double speedup = (ts > 0.0) ? (ts / tp) : 0.0;
     double efficiency = (speedup > 0.0) ? (speedup / (double)max_threads) : 0.0;
 
-    print_str(1, "n=");
-    print_int(1, n);
-    print_str(1, "max_threads=");
-    print_int(1, max_threads);
-    print_str(1, "threshold=");
-    print_int(1, threshold);
-    print_str(1, "sequential_ms=");
-    print_int(1, (long)(ts * 1000));
-    print_str(1, "parallel_ms=");
-    print_int(1, (long)(tp * 1000));
-    print_str(1, "speedup_x1000=");
-    print_int(1, (long)(speedup * 1000));
-    print_str(1, "efficiency_x1000=");
-    print_int(1, (long)(efficiency * 1000));
+    pstr(1, "n=");
+    pint(1, n);
+    pstr(1, "max_threads=");
+    pint(1, max_threads);
+    pstr(1, "threshold=");
+    pint(1, threshold);
+    pstr(1, "sequential_ms=");
+    pint(1, (long)(ts * 1000));
+    pstr(1, "parallel_ms=");
+    pint(1, (long)(tp * 1000));
+    pstr(1, "speedup_x1000=");
+    pint(1, (long)(speedup * 1000));
+    pstr(1, "efficiency_x1000=");
+    pint(1, (long)(efficiency * 1000));
 
-    free(arr_seq);
-    free(arr_par);
+    if (arr_seq) free(arr_seq);
+    if (arr_par) free(arr_par);
     return 0;
 }
